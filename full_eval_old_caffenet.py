@@ -13,7 +13,7 @@ import string
 from CameraReprojection import recover3d
 from GPSReprojection import MapPos, MapPosInv
 # import the protobuf format defined in caffe
-sys.path.append('/afs/cs.stanford.edu/u/twangcat/scratch/caffe/src/caffe/proto')
+sys.path.append('/afs/cs.stanford.edu/u/twangcat/scratch/caffenet/src/caffe/proto')
 import caffe_pb2
 from multilane_label_reader import MultilaneLabelReader
 from multilane_label_evaluator import MultilaneLabelEvaluator
@@ -103,14 +103,14 @@ def main(args=None):
     fid = open(proto_fname,'r')
     bpv.ParseFromString(fid.read())
     fid.close()
-    print bpv.blobs[0].shape
-    grid_length = bpv.blobs[0].shape.dim[1]
+    grid_length = bpv.blobs[0].channels
     grid_dim = int(np.sqrt(grid_length)) # number of quadrants inside the central patch, along 1 dimension
-    batch_size = bpv.blobs[0].shape.dim[0]
+    batch_size = bpv.blobs[0].num
+    print batch_size
     assert batch_size==opts.batch_size
-    quad_height = bpv.blobs[0].shape.dim[2]
-    quad_width = bpv.blobs[0].shape.dim[3]
-    num_regressions = bpv.blobs[1].shape.dim[1]/bpv.blobs[0].shape.dim[1]
+    quad_height = bpv.blobs[0].height
+    quad_width = bpv.blobs[0].width
+    num_regressions = bpv.blobs[1].channels/bpv.blobs[0].channels
     if not depth_only:
       # matrix of RF offsets. to be added to regression results
       x_adj = (np.floor(np.arange(label_width)/grid_dim)*grid_dim+grid_dim/2)*imwidth/label_width
@@ -138,17 +138,17 @@ def main(args=None):
       bpv.ParseFromString(fid.read())
       fid.close()
       pix_pred_all = np.array(bpv.blobs[0].data, order='C')
-      pix_pred_all = np.reshape(pix_pred_all, [batch_size,grid_length,quad_height,quad_width], order='C')
+      pix_pred_all = np.reshape(pix_pred_all, [bpv.blobs[0].num,bpv.blobs[0].channels,bpv.blobs[0].height,bpv.blobs[0].width], order='C')
       pix_pred_all = 1.0/ (1.0 + np.exp(-pix_pred_all))
       reg_pred_all = bpv.blobs[1]
       reg_pred_all = np.array(bpv.blobs[1].data, order='C')
-      reg_pred_all = np.reshape(reg_pred_all, [batch_size,grid_length*num_regressions,quad_height,quad_width], order='C')
+      reg_pred_all = np.reshape(reg_pred_all, [bpv.blobs[1].num,bpv.blobs[1].channels,bpv.blobs[1].height,bpv.blobs[1].width], order='C')
       pix_label_all = bpv.blobs[2]
       pix_label_all = np.array(bpv.blobs[2].data, order='C')
-      pix_label_all = np.reshape(pix_label_all, [batch_size,grid_length,quad_height,quad_width], order='C')
+      pix_label_all = np.reshape(pix_label_all, [bpv.blobs[2].num,bpv.blobs[2].channels,bpv.blobs[2].height,bpv.blobs[2].width], order='C')
       reg_label_all = bpv.blobs[3]
       reg_label_all = np.array(bpv.blobs[3].data, order='C')
-      reg_label_all = np.reshape(reg_label_all, [batch_size,grid_length*num_regressions,quad_height,quad_width], order='C')
+      reg_label_all = np.reshape(reg_label_all, [bpv.blobs[3].num,bpv.blobs[3].channels,bpv.blobs[3].height,bpv.blobs[3].width], order='C')
       # turn the z-stacked output into normal flat shape.
       grid_cnt = 0
       pix_pred_full = np.zeros([batch_size, 1, quad_height*grid_dim, quad_width*grid_dim], order='C')
