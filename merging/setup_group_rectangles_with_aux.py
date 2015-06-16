@@ -9,7 +9,8 @@ process = subprocess.Popen(
     ['pkg-config', '--libs', 'opencv'],
     stdout=subprocess.PIPE)
 out, err = process.communicate()
-libs = [lib for lib in str(out).split() if '.' in lib]
+#libs = [lib for lib in str(out).split() if '.' in lib]
+libs = [lib for lib in str(out).split()]
 opencv_path = set(['/'.join(lib.split('/')[:-2]) for lib in libs]).pop()
 print 'Your opencv path:', opencv_path
 

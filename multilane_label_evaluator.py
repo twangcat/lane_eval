@@ -12,17 +12,17 @@ __all__=['MultilaneLabelEvaluator']
 # eg: lane 0 is the left boundary of ego lane, lane 3 is the right boundary of the first lane to the right, etc.
 
 class MultilaneLabelEvaluator():
-    def __init__(self, depths=np.arange(15,90,5), tol=0.5, numLanes=6):
+    def __init__(self, depths=np.arange(15,90,5), numLanes=6,mbly=False):
       self.depths=depths # depths to evaluate lane detection
-      self.tol=tol # 
       self.tp=np.zeros([len(depths), numLanes], dtype='f4') # true positive counts by each lane, each depth
       self.fp_cnt=np.zeros([len(depths), numLanes], dtype='f4') # false positive counts
       self.fn_cnt=np.zeros([len(depths), numLanes], dtype='f4') # false negative counts
       self.pd=np.zeros([len(depths), numLanes], dtype='f4') # confident prediction counts 
       self.lat_err=np.zeros([len(depths), numLanes], dtype='f4') # lateral sqrerr, for confident predictions only
+      self.mbly = mbly # whether it's evaluating mbly predictions
       assert(numLanes%2==0),'numLanes must be an even number!'
       self.numLanes = numLanes # maximum number of lane boundaries we care about, starting from ego lane.
-
+      self.tol = np.arange(0.1,1.8,0.1)
     def sync(self, root):
       comm.Bcast([self.tp, np.prod(self.tp.shape), MPI.FLOAT], root=root)
       comm.Bcast([self.fp_cnt, np.prod(self.fp_cnt.shape), MPI.FLOAT], root=root)
@@ -210,7 +210,10 @@ class MultilaneLabelEvaluator():
         diff = self.labels['anchors'][:,0:3]-self.pred['anchors'][i:i+1,0:3]
         dist = (diff[:,[0,2]]**2).sum(1)
         match_idx = np.argmin(dist)
-        if dist[match_idx]<0.5: # for now use a tol of 0.5 . Might need to vary with distance.
+        tol = (self.labels['anchors'][match_idx,2]-self.depths[0])/100.0+0.1 # variable tolerance with z distance
+        if self.mbly:
+          tol = (self.labels['anchors'][match_idx,2]-self.depths[0])/100.0+0.2 # variable tolerance with z distance
+        if dist[match_idx]<tol:
           l=self.labels['anchors'][match_idx,:]
           p=self.pred['anchors'][i,:]
           matched_pairs.append({'pred':p, 'label':l})

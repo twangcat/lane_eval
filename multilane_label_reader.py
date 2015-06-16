@@ -20,6 +20,7 @@ from SetPerspDist import setPersp
 import cv,cv2
 import os
 import time
+import copy
 __all__=['MultilaneLabelReader']
 
 
@@ -50,6 +51,11 @@ def colorful_line(img, start, end, start_color, end_color, thickness):
   img = colorful_line(img, start, mid, start_color, mid_color, thickness)
   img = colorful_line(img, mid, end, mid_color, end_color, thickness)
   return img
+
+def cropScaleLabels(labels, upper_left, scale):
+  # scale the labels linearly according to the upper_left offset (x,y)
+  # and the scales (x_scale, y_scale)
+  return (labels-upper_left)*scale
 
 
 
@@ -168,7 +174,7 @@ class MultilaneLabelReader():
         meters_per_point2 = 5#24#12#6
         points_fwd2 = 15#6#12
         scan_range = starting_point + (points_fwd-1)*meters_per_point
-        seconds_ahead=5
+        seconds_ahead=120
         output_num = 0
         batchSize = frames.shape[0]
         labels= np.zeros([self.labelh, self.labelw, 2, batchSize],dtype=np.uint8,order='F')
@@ -182,12 +188,18 @@ class MultilaneLabelReader():
         imgs = [] # raw images
         trs = [] # transformations wrt 0-th frame
         fnum1s = []
+        timestamps = []
+        lane_keys = copy.copy(lanes.keys())
+        for key in lanes.keys():
+          if key[0:4]!='lane':
+            lane_keys.remove(key)
         for idx in xrange(batchSize):
             frame = frames[idx]
-            fnum2 =frame*10+split_num-1 # global video frame. if split0, *10+9; if split1, *10+0; if split 2, *10+1 .... if split9, *10+8
-            #fnum2 =frame # global video frame. if split0, *10+9; if split1, *10+0; if split 2, *10+1 .... if split9, *10+8
-            if cam_num>2:
-              fnum2 *=2 # wideview cams have half the framerate
+            video_frame = frames[idx]
+            #fnum2 =frame*10+split_num-1 # global video frame. if split0, *10+9; if split1, *10+0; if split 2, *10+1 .... if split9, *10+8
+            fnum2 =frame # global video frame. if split0, *10+9; if split1, *10+0; if split 2, *10+1 .... if split9, *10+8
+            #if cam_num>2:
+            #  fnum2 *=2 # wideview cams have half the framerate
             t = gps_times2[fnum2] # time stamp for the current video frame (same as gps_mark2)
             fnum1 = Idfromt(gps_times1,t) # corresponding frame in gps_mark1
             if self.new_distort:
@@ -209,7 +221,7 @@ class MultilaneLabelReader():
             ids = np.where(np.logical_and(gps_times1>t-seconds_ahead*1000000, gps_times1<t+seconds_ahead*1000000))[0]
             ids = range(ids[0], ids[-1]+1)
             # ids for computing lateral ordering of lanes.
-            anchor_ids = (self.zDistances(local_pts[2,:], fnum2, starting_point2, meters_per_point2, points_fwd2))
+            anchor_ids = (self.zDistances(local_pts[2,:], fnum1, starting_point2, meters_per_point2, points_fwd2))
             velocities = gps_dat[anchor_ids,4:7]
             velocities[:,[0, 1]] = velocities[:,[1, 0]]
             vel_start = ENU2IMUQ50(np.transpose(velocities), gps_dat[0,:])
@@ -229,10 +241,14 @@ class MultilaneLabelReader():
             Lane3d = {'pts':[],'id':[],'anchors':np.empty([0,5])}
             Trajectory = {'center':center2,'sideways':sideways_curr}
             for l in range(lanes['num_lanes']):
-              lane_key = 'lane'+str(l)
+              #lane_key = 'lane'+str(l)
+              lane_key = lane_keys[l]
               lane = lanes[lane_key]
               # find the appropriate portion on the lane (close to the position of car, in front of camera, etc)
               # find the closest point on the lane to the two end-points on the trajectory of car. ideally this should be done before-hand to increase efficiency.
+              local_displacement = np.dot(np.linalg.inv(tr1[fnum1,:,:]), np.concatenate((lane, np.ones([lane.shape[0], 1])), axis=1)
+.T).T
+              lane = lane[np.argsort(local_displacement[:,0]),:]
               dist_near = np.sum((lane-tr1[ids[0],0:3,3])**2, axis=1) # find distances of lane to current 'near' position.
               dist_far = np.sum((lane-tr1[ids[-1],0:3,3])**2, axis=1) # find distances of lane to current 'far' position.
               dist_self = np.sum((lane-tr1[fnum1,0:3,3])**2, axis=1) # find distances of lane to current self position.
@@ -259,7 +275,8 @@ class MultilaneLabelReader():
               # scale down to the size of the label mask 
               labelpix = np.transpose(np.round(c*self.label_scale))
               # scale down to the size of the actual image 
-              imgpix = c#*self.img_scale  #scaling is done in producer node for now
+              #imgpix = c#*self.img_scale  #scaling is done in producer node for now
+              imgpix = cropScaleLabels(c, np.array([[107],[0]]), np.array([[self.imwidth/1067.0],[self.imheight/800.0]])) 
               # find unique indices to be marked in the label mask
               #lu = np.ascontiguousarray(labelpix).view(np.dtype((np.void, labelpix.dtype.itemsize * labelpix.shape[1])))
               #_, l_idx = np.unique(lu, return_index=True)
@@ -325,7 +342,7 @@ class MultilaneLabelReader():
             if self.visualize:
               mask_scale = 8#opts.bb_mask_size/opts.mask_dim                                                        
               ms2 = mask_scale/2 
-              cap.set(cv.CV_CAP_PROP_POS_FRAMES, frame)
+              cap.set(cv.CV_CAP_PROP_POS_FRAMES, video_frame)
               success, img = cap.read()
               img = img.astype('f4')
               reg_label = reg_labels[:,:,:,idx]
@@ -347,15 +364,17 @@ class MultilaneLabelReader():
               imgs.append(img)
               trs.append(tr1[fnum1,:,:])
               fnum1s.append(fnum1)
+              timestamps.append(t)
               #cv2.imwrite('/scr/twangcat/lane_detect_results/test2/label_'+str(self.count)+'.png', np.clip(img, 0,255).astype('u1'))
             self.count+=1
         labels[:,:,1,:] = 1-labels[:,:,0,:]
         # push a batch of data to the data queue
-        self.q.put([imgs, labels.astype(np.float32),reg_labels,weight_labels,Pid, cam, labels_3d, trajectory_3d, trs,params,fnum1s, os.path.split(vid_name)[-1]])
+        self.q.put([imgs, labels.astype(np.float32),reg_labels,weight_labels,Pid, cam, labels_3d, trajectory_3d, trs,params,fnum1s, os.path.split(vid_name)[-1],timestamps])
 
     def runLabelling(self, batch):
         f = batch[0]
-        cam_num = int(f[-5])
+        #cam_num = int(f[-5])
+        cam_num = 601+1
         splitidx = string.index(f,'split_')
         split_num = int(f[splitidx+6])
         if split_num==0:

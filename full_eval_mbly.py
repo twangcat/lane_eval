@@ -19,14 +19,19 @@ from multilane_label_reader import MultilaneLabelReader
 from multilane_label_evaluator import MultilaneLabelEvaluator
 
 
-
+sys.path.append('/afs/cs.stanford.edu/u/twangcat/scratch/sail-car-log/process')
+from MblyTransforms import MblyLoader, T_from_mbly_to_lidar
+from ArgParser import parse_args
+from transformations import euler_from_matrix, euler_matrix
+from LidarTransforms import R_to_c_from_l
 
 blue = np.array([255,0,0])
 green = np.array([0,255,0])
 red = np.array([0,0,255])
 colors = [(255,255,0),(255,0,255),(0,255,255),(128,128,255),(128,255,128),(255,128,128),(128,128,0),(128,0,128),(0,128,128),(0,128,255),(0,255,128),(128,0,255),(128,255,0),(255,0,128),(255,128,0),(255,255,128),(128,255,255),(255,128,255),(128,0,0),(0,128,0),(0,0,128)]
 label_color = (50,50,50)
-
+mbly_rot = [0.0, -0.005, -0.006]
+mbly_T = [5.4, 0.0, -1.9]
 
 def cropScaleLabels(labels, upper_left, scale):
   # scale the labels linearly according to the upper_left offset (x,y)
@@ -57,6 +62,75 @@ def dist2color(dist, max_dist = 90.0):
   return color.astype(np.int)
 
 
+def addLaneToCam(lane_wrt_mbly,args):
+        mbly_R = euler_matrix(*mbly_rot)[:3, :3]
+        mbly_lane_pts_3d = []
+        for i in xrange(lane_wrt_mbly.shape[0]):
+            lane_pts_wrt_mbly = getLanePointsFromModel(lane_wrt_mbly[i, :])
+            if lane_pts_wrt_mbly is None:
+                continue
+            
+            pts_wrt_cam = xformMblyToCam(lane_pts_wrt_mbly, args, mbly_T,mbly_R)
+            mbly_lane_pts_3d.append(pts_wrt_cam)
+        return mbly_lane_pts_3d
+
+
+def xformMblyToCam(mbly_data, args, T, R):
+    """ Projects mobileye points into the camera's frame
+        Args: mbly_data, the output from loadMblyWindow
+              args, the output from parse_args
+    """
+    params = args['params']
+    cam_num = 601
+    cam = params['cam'][cam_num]
+
+    # Move points to the lidar FoR
+    pts_wrt_lidar = T_from_mbly_to_lidar(mbly_data, T, R)
+
+    # Move the points to the cam FoR
+    pts_wrt_cam = pts_wrt_lidar +\
+      cam['displacement_from_l_to_c_in_lidar_frame']
+    pts_wrt_cam = np.dot(R_to_c_from_l(cam), pts_wrt_cam.transpose()).T
+    return pts_wrt_cam
+
+
+
+def getLanePointsFromModel(lane_wrt_mbly):
+        view_range = lane_wrt_mbly[6]
+        if view_range == 0:
+            return None
+        num_pts = view_range * 3
+        X = np.linspace(0, view_range, num=num_pts)
+        # from model: Y = C3*X^3 + C2*X^2 + C1*X + C0.
+        X = np.vstack((np.ones(X.shape), X, np.power(X, 2), np.power(X, 3)))
+        # Mbly uses Y-right as positive, we use Y-left as positive
+        Y = -1 * np.dot(lane_wrt_mbly[:4], X)
+        lane_pts_wrt_mbly = np.vstack((X[1, :], Y, np.zeros((1, num_pts)))).T
+        return lane_pts_wrt_mbly
+
+
+def mblyLaneAsNp( mbly_lane):
+        """Turns a mobileye lane into a numpy array with format:
+        [C0, C1, C2, C3, lane_id, lane_type, view_range]
+
+        Y = C3*X^3 + C2*X^2 + C1*X + C0.
+        X is longitudinal distance from camera (positive right!)
+        Y is lateral distance from camera
+
+        lane_id is between -2 and 2, with -2 being the farthest left,
+        and 2 being the farthest right lane. There is no 0 id.
+
+        """
+        lanes_wrt_mbly = []
+        for l in mbly_lane:
+            lane_wrt_mbly = [l.C0, l.C1, l.C2, l.C3, l.lane_id, l.lane_type, \
+                             l.view_range]
+            lanes_wrt_mbly.append(lane_wrt_mbly)
+        return np.array(lanes_wrt_mbly)
+
+
+
+
 def main(args=None):
     # parse command-line args
     from optparse import OptionParser
@@ -76,15 +150,14 @@ def main(args=None):
     split_num=opts.split_num
     #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_multilane_planar_test_schedule_'+unique_name+'.avi_batch'+str(opts.batch_size)+'_split'+str(split_num)+'.txt'
     #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_multilane_planar_test_schedule_'+unique_name+'.avi_batch'+str(opts.batch_size)+'.txt'
-    #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_HDR_multilane_planar_test_schedule_4-17-15-280_batch5.txt'
-    schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_HDR_multilane_planar_test_schedule_4-25-15-elcamino_el-camino_l_batch5.txt'
+    schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_HDR_multilane_planar_test_schedule_4-17-15-280_batch5.txt'
     print 'loading schedule file: '+ schedule_file
     if os.path.isfile(schedule_file):
       sid = open(schedule_file, 'r')
     else:
       print 'file not found!'
       return 1
-    num_batches = sum(1 for line in sid)
+    num_batches = 650#sum(1 for line in sid)
     print 'total of '+str(num_batches)+' batches'
     draw_raw = True
     depth_only = False#True
@@ -98,9 +171,9 @@ def main(args=None):
     reg_scale = np.array([[640/1067.0,480/800.0]])
     upper_left = np.array([[107,0]])
     labelReader = MultilaneLabelReader(buffer_size=10, imdepth=3, imwidth=imwidth, imheight=imheight, label_dim = [label_width,label_height], predict_depth = True, readVideo=True)
-    evaluator = MultilaneLabelEvaluator()
+    evaluator = MultilaneLabelEvaluator(mbly=True)
     batch_num =0
-    starting_batch=0
+    starting_batch=1
     with open(schedule_file, 'r') as sid:
       for line in sid:
         if batch_num>=starting_batch:
@@ -146,24 +219,20 @@ def main(args=None):
     All_Lane_Pred = []
     Global_Frames = [] 
     for it in range(starting_batch,num_batches):
+
       imgs,labels,reg_labels,weights,Pid,cam,labels_3d,trajectory,trs,params,global_frames,videoname,timestamps = labelReader.pop_batch()
+      foldername = '/deep/group/driving_data/q50_data/4-17-15-280/' 
+      videoname = videoname.replace('split_0_','')
+      args = parse_args(foldername, videoname)
+      mbly_loader = MblyLoader(args)
+
+
+
       labels = np.transpose(labels, [3,2,1,0]) #[numimgs, channels, x, y]
       reg_labels = np.transpose(reg_labels, [3,2,1,0])
       #reg_labels[:,0:4,:,:]*=reg_scale
       T_from_l_to_i = params['lidar']['T_from_l_to_i']
       T_from_i_to_l = np.linalg.inv(T_from_l_to_i)
-      #proto_fname = '/deep/group/driving_data/twangcat/caffe_results/proto/raw_outputs/old_iter72000/'+unique_name+'_batch'+str(it)+'.proto'
-      #proto_fname = '/deep/group/driving_data/twangcat/caffe_results/proto/raw_outputs/'+unique_name+'_split'+str(split_num)+'_batch'+str(it)+'.proto'
-      proto_fname = '/deep/group/driving_data/twangcat/caffe_results/proto/raw_outputs/'+unique_name+'_batch'+str(it)+'.proto'
-      fid = open(proto_fname,'r')
-      bpv.ParseFromString(fid.read())
-      fid.close()
-      pix_pred_all = np.array(bpv.blobs[0].data, order='C')
-      pix_pred_all = np.reshape(pix_pred_all, [batch_size,grid_length,quad_height,quad_width], order='C')
-      pix_pred_all = 1.0/ (1.0 + np.exp(-pix_pred_all))
-      reg_pred_all = bpv.blobs[1]
-      reg_pred_all = np.array(bpv.blobs[1].data, order='C')
-      reg_pred_all = np.reshape(reg_pred_all, [batch_size,grid_length*num_regressions,quad_height,quad_width], order='C')
       pix_label_all = bpv.blobs[2]
       pix_label_all = np.array(bpv.blobs[2].data, order='C')
       pix_label_all = np.reshape(pix_label_all, [batch_size,grid_length,quad_height,quad_width], order='C')
@@ -172,96 +241,35 @@ def main(args=None):
       reg_label_all = np.reshape(reg_label_all, [batch_size,grid_length*num_regressions,quad_height,quad_width], order='C')
       # turn the z-stacked output into normal flat shape.
       grid_cnt = 0
-      pix_pred_full = np.zeros([batch_size, 1, quad_height*grid_dim, quad_width*grid_dim], order='C')
-      reg_pred_full = np.zeros([batch_size, num_regressions, quad_height*grid_dim, quad_width*grid_dim], order='C')
       pix_label_full = np.zeros([batch_size, 1, quad_height*grid_dim, quad_width*grid_dim], order='C')
       reg_label_full = np.zeros([batch_size, num_regressions, quad_height*grid_dim, quad_width*grid_dim], order='C')
       for qy in range(quad_height):
         for qx in range(quad_width):
-          pix_pred_full[:, 0, qy*grid_dim:(qy+1)*grid_dim, qx*grid_dim:(qx+1)*grid_dim] = np.reshape(pix_pred_all[:, :, qy,qx], [batch_size, grid_dim,grid_dim], order='C')
-          reg_pred_full[:, :, qy*grid_dim:(qy+1)*grid_dim, qx*grid_dim:(qx+1)*grid_dim] = np.reshape(reg_pred_all[:, :, qy,qx], [batch_size, num_regressions, grid_dim, grid_dim],order='C')
           pix_label_full[:, 0, qy*grid_dim:(qy+1)*grid_dim, qx*grid_dim:(qx+1)*grid_dim] = np.reshape(pix_label_all[:, :, qy,qx], [batch_size, grid_dim,grid_dim], order='C')
           reg_label_full[:, :, qy*grid_dim:(qy+1)*grid_dim, qx*grid_dim:(qx+1)*grid_dim] = np.reshape(reg_label_all[:, :, qy,qx], [batch_size, num_regressions, grid_dim, grid_dim],order='C')
           grid_cnt+=1
 
       if not depth_only:
-        reg_pred_full[:,[0,2],:,:] +=x_adj
-        reg_pred_full[:,[1,3],:,:] +=y_adj
         reg_label_full[:,[0,2],:,:] +=x_adj
         reg_label_full[:,[1,3],:,:] +=y_adj
-      pix_pred_full = np.transpose(pix_pred_full, [0,1,3,2]) #[numimgs, channels, x, y]
       pix_label_full = np.transpose(pix_label_full, [0,1,3,2]) #[numimgs, channels, x, y]
-      reg_pred_full = np.transpose(reg_pred_full, [0,1,3,2])
       reg_label_full = np.transpose(reg_label_full, [0,1,3,2])
       #mask_scale = opts.bb_mask_size/opts.mask_dim
       #      ms2 = mask_scale/2
-      '''
-      for i in xrange(batch_size):
-        image = imgs[i].astype('u1')
-        for y in range(label_height):
-          for x in range(label_width):
-            pix_pred = pix_pred_full[i, 0, y, x]
-            # draw pixel label/pred
-            x1 = 0 if x-0.5<0 else x-0.5
-            y1 = 0 if y-0.5<0 else y-0.5
-            w = scaling - (0.5-x if x<0.5 else 0) - (x1+scaling-imwidth if x1+scaling>imwidth else 0)
-            h = scaling - (0.5-y if y<0.5 else 0) - (y1+scaling-imheight if y1+scaling>imheight else 0)
-            roi = image[y1*scaling:y1*scaling+h, x1*scaling:x1*scaling+w,:]
-            image[y1*scaling:y1*scaling+h, x1*scaling:x1*scaling+w,:] = green*pix_pred+roi*(1.0 - pix_pred)
-            if pix_pred > thresh:
-              # draw reg label/pred
-              x_min = np.round(reg_pred_full[i, 0, y, x])
-              y_min = np.round(reg_pred_full[i, 1, y, x])
-              x_max = np.round(reg_pred_full[i, 2, y, x])
-              y_max = np.round(reg_pred_full[i, 3, y, x])
-              
-              min_depth = reg_pred_full[i, 4, y, x]
-              max_depth = reg_pred_full[i, 5, y, x]
-              lineColor = dist2color((min_depth+max_depth)/2.);
-              #draw label and predictions on image.
-                
-              cv2.line(image,(int(x_min), int(y_min)),(int(x_max), int(y_max)),lineColor.tolist(), thickness=2);
-        cv2.imwrite('/scr/twangcat/caffenet_results/test/'+str(count)+'.png', np.clip(image, 0,255).astype('u1')) 
-        count+=1
-      '''
       for i in range(batch_size):
                 img = imgs[i].astype('u1')
                 if draw_raw:  
                   img_raw = np.array(img)
                 topDown = np.zeros([480,480,3], dtype='u1') 
-                pred = pix_pred_full[i,:,:,:] 
                 label = labels[i,:,:,:]
-                reg_label = reg_labels[i,:,:,:]
-                reg_pred = reg_pred_full[i,:,:,:]
+                #reg_label = reg_labels[i,:,:,:]
+                #reg_pred = reg_pred_full[i,:,:,:]
+                mbly_lanes = mbly_loader.loadLane(timestamps[i])
+                lane_wrt_mbly = mblyLaneAsNp(mbly_lanes)
+                lane_pred_3d = addLaneToCam(lane_wrt_mbly,args)
                 label2 = pix_label_full[i,:,:,:]
-                #reg_label = reg_label_full[i,:,:,:].astype('i4')
+                reg_label = reg_label_full[i,:,:,:]
                 print '**************************************'
-                for ii in xrange(label.shape[1]):                                                                
-                  for jj in xrange(label.shape[2]): 
-                    #if label[0,ii,jj]>0.5:
-                    #  cv2.line(img, (reg_label[0,ii,jj],reg_label[1,ii,jj]), (reg_label[2,ii,jj], reg_label[3,ii,jj]), label_color, thickness=2 )
-                    if draw_raw:
-                      pix_pred = pred[0, ii, jj]
-                      x1 = 0 if ii-0.5<0 else ii-0.5
-                      y1 = 0 if jj-0.5<0 else jj-0.5
-                      w = scaling - (0.5-ii if ii<0.5 else 0) - (x1+scaling-imwidth if x1+scaling>imwidth else 0)
-                      h = scaling - (0.5-jj if jj<0.5 else 0) - (y1+scaling-imheight if y1+scaling>imheight else 0)
-                      roi = img_raw[y1*scaling:y1*scaling+h, x1*scaling:x1*scaling+w,:]
-                      if depth_only:
-                        if pix_pred > lowThresh:
-                          maskcolor = dist2color(reg_pred_full[i,0,ii,jj]);
-                          img_raw[y1*scaling:y1*scaling+h, x1*scaling:x1*scaling+w,:] = maskcolor*pix_pred+roi*(1.0 - pix_pred)
-                      else: 
-                        img_raw[y1*scaling:y1*scaling+h, x1*scaling:x1*scaling+w,:] = green*pix_pred+roi*(1.0 - pix_pred)
-                        if pix_pred > lowThresh:
-                          x_min = np.round(reg_pred_full[i, 0, ii, jj])
-                          y_min = np.round(reg_pred_full[i, 1, ii, jj])
-                          x_max = np.round(reg_pred_full[i, 2, ii, jj])
-                          y_max = np.round(reg_pred_full[i, 3, ii, jj])
-                          min_depth = reg_pred_full[i, 4, ii, jj]
-                          max_depth = reg_pred_full[i, 5, ii, jj]
-                          lineColor = dist2color((min_depth+max_depth)/2.);
-                          cv2.line(img_raw,(int(x_min), int(y_min)),(int(x_max), int(y_max)),lineColor.tolist(), thickness=2);
                 if len(trajectory)>0:
                   Trajectory=trajectory[i]
                 if len(labels_3d)>0:
@@ -271,56 +279,41 @@ def main(args=None):
                       ip = ll-1
                       ic = ll
                       cv2.line(topDown, (int(lane3d[0,ip]*6+240), int(479-(lane3d[2,ip]-4)*6+6)) , (int(lane3d[0, ll+1]*6+240), int(479-(lane3d[2,ll+1]-4)*6+6)) ,label_color,1)
-                candidates = np.transpose(np.array(np.where(pred[0,:,:]>lowThresh))) # coord of candidates in label mask
-                confs = pred[0,candidates[:,0], candidates[:,1]] # candidate confidences
-                all_reg =np.transpose(reg_pred[:,candidates[:,0].astype('i4'), candidates[:,1].astype('i4')])
-                num_pts = all_reg.shape[0]
-                pix = np.reshape(all_reg[:,0:4], [num_pts*2,2],order='C')# all start and end pts of line segments in pixels
-                pix = recoverScaledPred(pix, upper_left, reg_scale)# convert to full-res image
-                zs = np.reshape(all_reg[:,4:6], num_pts*2, order='C')
-                Pos = np.reshape(recover3d(pix, cam, Z=zs), [num_pts, 6], order='C')
-                # assign a lane label to each segments
-                #laneids = ransacCluster(Pos[:,[0,2,3,5]])
-                #laneids = dbscanCluster(Pos[:,[0,2,3,5]])
-                #laneids, Pos2 = dbscanJLinkCluster(Pos[:,[0,2,3,5]])
-                laneids, Pos = dbscanJLinkCluster(Pos)
+                #Pos = np.reshape(recover3d(pix, cam, Z=zs), [num_pts, 6], order='C')
                   
-                (c1, J)  = cv2.projectPoints(Pos[:,0:3].astype('f8'), np.array([0.0,0.0,0.0]), np.array([0.0,0.0,0.0]), cam['KK'], cam['distort'])
-                (c2, J)  = cv2.projectPoints(Pos[:,3:6].astype('f8'), np.array([0.0,0.0,0.0]), np.array([0.0,0.0,0.0]), cam['KK'], cam['distort'])
-                all_reg[:,0:2]=np.squeeze(cropScaleLabels(c1, upper_left, reg_scale))
-                all_reg[:,2:4]=np.squeeze(cropScaleLabels(c2, upper_left, reg_scale))
+                #(c1, J)  = cv2.projectPoints(Pos[:,0:3].astype('f8'), np.array([0.0,0.0,0.0]), np.array([0.0,0.0,0.0]), cam['KK'], cam['distort'])
+                #(c2, J)  = cv2.projectPoints(Pos[:,3:6].astype('f8'), np.array([0.0,0.0,0.0]), np.array([0.0,0.0,0.0]), cam['KK'], cam['distort'])
+                #all_reg[:,0:2]=np.squeeze(cropScaleLabels(c1, upper_left, reg_scale))
+                #all_reg[:,2:4]=np.squeeze(cropScaleLabels(c2, upper_left, reg_scale))
                 #for rid in range(laneids.shape[0]):
                   #if laneids[rid]>=0:
                     #cv2.line(img, (all_reg[rid, 0],all_reg[rid,1]), (all_reg[rid,2], all_reg[rid,3]), colors[laneids[rid]], thickness=2)
                     #cv2.line(topDown, (int(Pos[rid,0]*6+240), int(479-(Pos[rid,2]-4)*6+6)) , (int(Pos[rid,3]*6+240), int(479-(Pos[rid,5]-4)*6+6)) ,colors[laneids[rid]],1)
                 # group segments belonging to the same lane together 
-                unique_laneids = np.sort(np.unique(laneids))
-                lane_pred_3d = []
-                lane_pred_frame0 = [] # 3d lane pts wrt frame 0
+                #unique_laneids = np.sort(np.unique(laneids))
+                #lane_pred_3d = []
+                #lane_pred_frame0 = [] # 3d lane pts wrt frame 0
                 lane_pred =[]
-                lane_conf = []
-                lane_ids = []
-                maxNumLanes=4
-                for id in unique_laneids:
-                  if id !=-1 and id<maxNumLanes:
-                    npts = np.sum(laneids==id)
-                    r = np.reshape(all_reg[laneids==id, 0:4], [npts*2,2],order='C')
-                    p = np.reshape(Pos[laneids==id,:], [npts*2,3],order='C')
-                    c = candidates[laneids==id,:]
-                    conf = np.sum(pred[0,c[:,0], c[:,1]])
-                    sortidx = np.argsort(p[:,2])  # sort according to Z
-                    lane_pred.append(r[sortidx,:])
-                    lane_pred_3d.append(p[sortidx,:])
-                    lane_pred_frame0.append(MapPosInv(p[sortidx,:].transpose(), trs[i], cam, T_from_i_to_l))
-                    lane_conf.append(conf)
-                    lane_ids.append(id)
+                lane_conf = [1]*len(lane_pred_3d)
+                lane_ids = range(len(lane_pred_3d))
+                for lane_3d in lane_pred_3d:
+                  (c, J)  = cv2.projectPoints(lane_3d, np.array([0.0,0.0,0.0]), np.array([0.0,0.0,0.0]), cam['KK'], cam['distort'])
+                  lane_pred.append(np.squeeze(cropScaleLabels(c, upper_left, reg_scale)))
+                #lane_ids = []
+                #maxNumLanes=4
+                #for id in unique_laneids:
+                #  if id !=-1 and id<maxNumLanes:
+                #    npts = np.sum(laneids==id)
+                #    r = np.reshape(all_reg[laneids==id, 0:4], [npts*2,2],order='C')
+                #    p = np.reshape(Pos[laneids==id,:], [npts*2,3],order='C')
+                #    c = candidates[laneids==id,:]
+                
                 # draw each lane
                 for lid in range(len(lane_conf)):
                   l = lane_pred[lid]
                   l3d = lane_pred_3d[lid]
-                  for rid in range(1,l.shape[0]):
-                    #cv2.line(img, (int(l[rid-1, 0]),int(l[rid-1,1])), (int(l[rid,0]), int(l[rid,1])), colors[lane_ids[lid]%(len(colors))], thickness=2)
-                    cv2.line(img, (int(l[rid-1, 0]),int(l[rid-1,1])), (int(l[rid,0]), int(l[rid,1])), green, thickness=2)
+                  for rid in range(1,l3d.shape[0]):
+                    cv2.line(img, (int(l[rid-1, 0]),int(l[rid-1,1])), (int(l[rid,0]), int(l[rid,1])), colors[lane_ids[lid]%(len(colors))], thickness=2)
                     cv2.line(topDown, (int(l3d[rid-1,0]*6+240), int(479-(l3d[rid-1,2]-4)*6+6)) , (int(l3d[rid,0]*6+240), int(479-(l3d[rid,2]-4)*6+6)) ,colors[lane_ids[lid]%len(colors)],1)
                     
                 pred_lanes = {'pts':lane_pred_3d, 'conf':lane_conf, 'id':lane_ids}
@@ -329,9 +322,6 @@ def main(args=None):
                 #cv2.putText(img, str(count)+' from '+videoname+' '+str(global_frames[i]), (10,20), cv2.FONT_HERSHEY_PLAIN, 1.6, colors[-1],thickness=1)
                 imgname = '/scr/twangcat/caffenet_results/test/'+str(count)+'.png' 
                 cv2.imwrite(imgname, np.concatenate((np.clip(img,0,255).astype(np.uint8),topDown), axis=1))
-                if draw_raw:  
-                  imgname_raw = '/scr/twangcat/caffenet_results/test/raw_'+str(count)+'.png' 
-                  cv2.imwrite(imgname_raw, np.clip(img_raw,0,255).astype(np.uint8))
                 #if save_outputs:
                 #  allMaskLabel[vis_count-1,:,:] = label[0,:,:] 
                 #  allRegLabel[vis_count-1,:,:,:] = reg_label
@@ -349,10 +339,10 @@ def main(args=None):
     pd=evaluator.pd
     lat_err=evaluator.lat_err
     laneResults={'tp':tp,'fp':fp,'fn':fn,'pd':pd,'lat_err':lat_err}
-    acc_name = '/deep/group/driving_data/twangcat/caffe_results/lane_acc/'+unique_name+'.mat' 
+    acc_name = '/deep/group/driving_data/twangcat/caffe_results/lane_acc/'+unique_name+'_mbly.mat' 
     savemat(acc_name,laneResults)
     aa = {'Lanes':All_Lane_Pred, 'Frames':Global_Frames}
-    lane_outname = '/deep/group/driving_data/twangcat/caffe_results/lane_acc/'+unique_name+'_lanepred.pickle'
+    lane_outname = '/deep/group/driving_data/twangcat/caffe_results/lane_acc/'+unique_name+'_mbly_lanepred.pickle'
     #lane_outname = '/deep/group/driving_data/twangcat/caffe_results/lane_acc/'+unique_name+'_split'+str(split_num)+'_lanepred.pickle'
     fid = open(lane_outname, 'wb')
     pickle.dump(aa, fid)

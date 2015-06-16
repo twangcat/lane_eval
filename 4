@@ -27,19 +27,7 @@ red = np.array([0,0,255])
 colors = [(255,255,0),(255,0,255),(0,255,255),(128,128,255),(128,255,128),(255,128,128),(128,128,0),(128,0,128),(0,128,128),(0,128,255),(0,255,128),(128,0,255),(128,255,0),(255,0,128),(255,128,0),(255,255,128),(128,255,255),(255,128,255),(128,0,0),(0,128,0),(0,0,128)]
 label_color = (50,50,50)
 
-
-def cropScaleLabels(labels, upper_left, scale):
-  # scale the labels linearly according to the upper_left offset (x,y)
-  # and the scales (x_scale, y_scale)
-  return (labels-upper_left)*scale
-
-
-def recoverScaledPred(pred, upper_left, scale):
-  # recover the predictions linearly according to the upper_left offset (x,y)
-  # and the scales (x_scale, y_scale)
-  return (pred/scale+upper_left)
-
- 
+  
   
 def check_for_nans(W):
     assert not np.any(np.isnan(W.get()))
@@ -66,7 +54,7 @@ def main(args=None):
                       help="Date on which video is taken, format: (d)d-mm-yy-location")
     parser.add_option('--video_name', dest='video_name', default='',
                       help="Name of video to test")
-    parser.add_option('--batch_size', dest='batch_size', default=5,
+    parser.add_option('--batch_size', dest='batch_size', default=10,
                       help="Batch size")
     parser.add_option('--split_num', dest='split_num', default=10,
                       help="video split number")
@@ -75,9 +63,7 @@ def main(args=None):
     unique_name = opts.date+'-'+opts.video_name
     split_num=opts.split_num
     #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_multilane_planar_test_schedule_'+unique_name+'.avi_batch'+str(opts.batch_size)+'_split'+str(split_num)+'.txt'
-    #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_multilane_planar_test_schedule_'+unique_name+'.avi_batch'+str(opts.batch_size)+'.txt'
-    #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_HDR_multilane_planar_test_schedule_4-17-15-280_batch5.txt'
-    schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_HDR_multilane_planar_test_schedule_4-25-15-elcamino_el-camino_l_batch5.txt'
+    schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_multilane_planar_test_schedule_'+unique_name+'.avi_batch'+str(opts.batch_size)+'.txt'
     print 'loading schedule file: '+ schedule_file
     if os.path.isfile(schedule_file):
       sid = open(schedule_file, 'r')
@@ -95,8 +81,7 @@ def main(args=None):
     #label_height = 120
     label_width = 80
     label_height = 60
-    reg_scale = np.array([[640/1067.0,480/800.0]])
-    upper_left = np.array([[107,0]])
+    reg_scale = 0.4
     labelReader = MultilaneLabelReader(buffer_size=10, imdepth=3, imwidth=imwidth, imheight=imheight, label_dim = [label_width,label_height], predict_depth = True, readVideo=True)
     evaluator = MultilaneLabelEvaluator()
     batch_num =0
@@ -117,6 +102,7 @@ def main(args=None):
     
     patch_size = 32 # size of central patch
     count = 0
+    #lowThresh = 0.2
     lowThresh = 0.5
     # read a single file first to find out the dimensions
     #proto_fname = '/deep/group/driving_data/twangcat/caffe_results/proto/raw_outputs/'+unique_name+'_split'+str(split_num)+'_batch0.proto'
@@ -146,10 +132,10 @@ def main(args=None):
     All_Lane_Pred = []
     Global_Frames = [] 
     for it in range(starting_batch,num_batches):
-      imgs,labels,reg_labels,weights,Pid,cam,labels_3d,trajectory,trs,params,global_frames,videoname,timestamps = labelReader.pop_batch()
+      imgs,labels,reg_labels,weights,Pid,cam,labels_3d,trajectory,trs,params,global_frames,videoname = labelReader.pop_batch()
       labels = np.transpose(labels, [3,2,1,0]) #[numimgs, channels, x, y]
       reg_labels = np.transpose(reg_labels, [3,2,1,0])
-      #reg_labels[:,0:4,:,:]*=reg_scale
+      reg_labels[:,0:4,:,:]*=reg_scale
       T_from_l_to_i = params['lidar']['T_from_l_to_i']
       T_from_i_to_l = np.linalg.inv(T_from_l_to_i)
       #proto_fname = '/deep/group/driving_data/twangcat/caffe_results/proto/raw_outputs/old_iter72000/'+unique_name+'_batch'+str(it)+'.proto'
@@ -234,12 +220,12 @@ def main(args=None):
                 reg_label = reg_labels[i,:,:,:]
                 reg_pred = reg_pred_full[i,:,:,:]
                 label2 = pix_label_full[i,:,:,:]
-                #reg_label = reg_label_full[i,:,:,:].astype('i4')
+                reg_label2 = reg_label_full[i,:,:,:]
                 print '**************************************'
                 for ii in xrange(label.shape[1]):                                                                
                   for jj in xrange(label.shape[2]): 
                     #if label[0,ii,jj]>0.5:
-                    #  cv2.line(img, (reg_label[0,ii,jj],reg_label[1,ii,jj]), (reg_label[2,ii,jj], reg_label[3,ii,jj]), label_color, thickness=2 )
+                    #  cv2.line(img, (reg_label[0,ii,jj],reg_label[1,ii,jj]), (reg_label[2,ii,jj], reg_label[3,ii,jj]), label_color, thickness=1 )
                     if draw_raw:
                       pix_pred = pred[0, ii, jj]
                       x1 = 0 if ii-0.5<0 else ii-0.5
@@ -270,25 +256,26 @@ def main(args=None):
                     for ll in range(1, lane3d.shape[1]-1):
                       ip = ll-1
                       ic = ll
-                      cv2.line(topDown, (int(lane3d[0,ip]*6+240), int(479-(lane3d[2,ip]-4)*6+6)) , (int(lane3d[0, ll+1]*6+240), int(479-(lane3d[2,ll+1]-4)*6+6)) ,label_color,1)
+                      #cv2.line(topDown, (int(lane3d[0,ip]*6+240), int(479-(lane3d[2,ip]-4)*6+6)) , (int(lane3d[0, ll+1]*6+240), int(479-(lane3d[2,ll+1]-4)*6+6)) ,label_color,1)
                 candidates = np.transpose(np.array(np.where(pred[0,:,:]>lowThresh))) # coord of candidates in label mask
                 confs = pred[0,candidates[:,0], candidates[:,1]] # candidate confidences
                 all_reg =np.transpose(reg_pred[:,candidates[:,0].astype('i4'), candidates[:,1].astype('i4')])
                 num_pts = all_reg.shape[0]
-                pix = np.reshape(all_reg[:,0:4], [num_pts*2,2],order='C')# all start and end pts of line segments in pixels
-                pix = recoverScaledPred(pix, upper_left, reg_scale)# convert to full-res image
+                pix = np.reshape(all_reg[:,0:4], [num_pts*2,2],order='C')/reg_scale # all start and end pts of line segments in pixels
                 zs = np.reshape(all_reg[:,4:6], num_pts*2, order='C')
                 Pos = np.reshape(recover3d(pix, cam, Z=zs), [num_pts, 6], order='C')
                 # assign a lane label to each segments
                 #laneids = ransacCluster(Pos[:,[0,2,3,5]])
                 #laneids = dbscanCluster(Pos[:,[0,2,3,5]])
                 #laneids, Pos2 = dbscanJLinkCluster(Pos[:,[0,2,3,5]])
-                laneids, Pos = dbscanJLinkCluster(Pos)
-                  
+                if len(Pos)>0: 
+                  laneids, Pos = dbscanJLinkCluster(Pos)
+                else:
+                  laneids = []  
                 (c1, J)  = cv2.projectPoints(Pos[:,0:3].astype('f8'), np.array([0.0,0.0,0.0]), np.array([0.0,0.0,0.0]), cam['KK'], cam['distort'])
                 (c2, J)  = cv2.projectPoints(Pos[:,3:6].astype('f8'), np.array([0.0,0.0,0.0]), np.array([0.0,0.0,0.0]), cam['KK'], cam['distort'])
-                all_reg[:,0:2]=np.squeeze(cropScaleLabels(c1, upper_left, reg_scale))
-                all_reg[:,2:4]=np.squeeze(cropScaleLabels(c2, upper_left, reg_scale))
+                all_reg[:,0:2]=np.squeeze(c1*reg_scale)
+                all_reg[:,2:4]=np.squeeze(c2*reg_scale)
                 #for rid in range(laneids.shape[0]):
                   #if laneids[rid]>=0:
                     #cv2.line(img, (all_reg[rid, 0],all_reg[rid,1]), (all_reg[rid,2], all_reg[rid,3]), colors[laneids[rid]], thickness=2)
@@ -319,9 +306,8 @@ def main(args=None):
                   l = lane_pred[lid]
                   l3d = lane_pred_3d[lid]
                   for rid in range(1,l.shape[0]):
-                    #cv2.line(img, (int(l[rid-1, 0]),int(l[rid-1,1])), (int(l[rid,0]), int(l[rid,1])), colors[lane_ids[lid]%(len(colors))], thickness=2)
-                    cv2.line(img, (int(l[rid-1, 0]),int(l[rid-1,1])), (int(l[rid,0]), int(l[rid,1])), green, thickness=2)
-                    cv2.line(topDown, (int(l3d[rid-1,0]*6+240), int(479-(l3d[rid-1,2]-4)*6+6)) , (int(l3d[rid,0]*6+240), int(479-(l3d[rid,2]-4)*6+6)) ,colors[lane_ids[lid]%len(colors)],1)
+                    cv2.line(img, (int(l[rid-1, 0]),int(l[rid-1,1])), (int(l[rid,0]), int(l[rid,1])), colors[lane_ids[lid]%(len(colors))], thickness=2)
+                    #cv2.line(topDown, (int(l3d[rid-1,0]*6+240), int(479-(l3d[rid-1,2]-4)*6+6)) , (int(l3d[rid,0]*6+240), int(479-(l3d[rid,2]-4)*6+6)) ,colors[lane_ids[lid]%len(colors)],1)
                     
                 pred_lanes = {'pts':lane_pred_3d, 'conf':lane_conf, 'id':lane_ids}
                 evaluator.accEvalCounts(pred_lanes,Lane3d,Trajectory)
