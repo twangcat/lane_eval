@@ -24,8 +24,9 @@ from multilane_label_evaluator import MultilaneLabelEvaluator
 blue = np.array([255,0,0])
 green = np.array([0,255,0])
 red = np.array([0,0,255])
+pink = np.array([180,105,255])
 colors = [(255,255,0),(255,0,255),(0,255,255),(128,128,255),(128,255,128),(255,128,128),(128,128,0),(128,0,128),(0,128,128),(0,128,255),(0,255,128),(128,0,255),(128,255,0),(255,0,128),(255,128,0),(255,255,128),(128,255,255),(255,128,255),(128,0,0),(0,128,0),(0,0,128)]
-label_color = (50,50,50)
+label_color = (0,255,0)#(50,50,50)
 
 
 def cropScaleLabels(labels, upper_left, scale):
@@ -77,7 +78,7 @@ def main(args=None):
     #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_multilane_planar_test_schedule_'+unique_name+'.avi_batch'+str(opts.batch_size)+'_split'+str(split_num)+'.txt'
     #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_multilane_planar_test_schedule_'+unique_name+'.avi_batch'+str(opts.batch_size)+'.txt'
     #schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_HDR_multilane_planar_test_schedule_4-17-15-280_batch5.txt'
-    schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_HDR_multilane_planar_test_schedule_4-25-15-elcamino_el-camino_l_batch5.txt'
+    schedule_file = '/scail/group/deeplearning/driving_data/twangcat/schedules/q50_HDR_multilane_planar_test_schedule_4-25-15-elcamino_BackToStanford_d_batch5.txt'
     print 'loading schedule file: '+ schedule_file
     if os.path.isfile(schedule_file):
       sid = open(schedule_file, 'r')
@@ -252,7 +253,7 @@ def main(args=None):
                           maskcolor = dist2color(reg_pred_full[i,0,ii,jj]);
                           img_raw[y1*scaling:y1*scaling+h, x1*scaling:x1*scaling+w,:] = maskcolor*pix_pred+roi*(1.0 - pix_pred)
                       else: 
-                        img_raw[y1*scaling:y1*scaling+h, x1*scaling:x1*scaling+w,:] = green*pix_pred+roi*(1.0 - pix_pred)
+                        img_raw[y1*scaling:y1*scaling+h, x1*scaling:x1*scaling+w,:] = pink*pix_pred+roi*(1.0 - pix_pred)
                         if pix_pred > lowThresh:
                           x_min = np.round(reg_pred_full[i, 0, ii, jj])
                           y_min = np.round(reg_pred_full[i, 1, ii, jj])
@@ -318,7 +319,7 @@ def main(args=None):
                 for lid in range(len(lane_conf)):
                   l = lane_pred[lid]
                   l3d = lane_pred_3d[lid]
-                  for rid in range(1,l.shape[0]):
+                  for rid in []:#range(1,l.shape[0]):
                     #cv2.line(img, (int(l[rid-1, 0]),int(l[rid-1,1])), (int(l[rid,0]), int(l[rid,1])), colors[lane_ids[lid]%(len(colors))], thickness=2)
                     cv2.line(img, (int(l[rid-1, 0]),int(l[rid-1,1])), (int(l[rid,0]), int(l[rid,1])), green, thickness=2)
                     cv2.line(topDown, (int(l3d[rid-1,0]*6+240), int(479-(l3d[rid-1,2]-4)*6+6)) , (int(l3d[rid,0]*6+240), int(479-(l3d[rid,2]-4)*6+6)) ,colors[lane_ids[lid]%len(colors)],1)
@@ -328,7 +329,8 @@ def main(args=None):
                 topDown = evaluator.drawOnImage(topDown)
                 #cv2.putText(img, str(count)+' from '+videoname+' '+str(global_frames[i]), (10,20), cv2.FONT_HERSHEY_PLAIN, 1.6, colors[-1],thickness=1)
                 imgname = '/scr/twangcat/caffenet_results/test/'+str(count)+'.png' 
-                cv2.imwrite(imgname, np.concatenate((np.clip(img,0,255).astype(np.uint8),topDown), axis=1))
+                #cv2.imwrite(imgname, np.concatenate((np.clip(img,0,255).astype(np.uint8),topDown), axis=1))
+                #cv2.imwrite(imgname, np.clip(img,0,255).astype(np.uint8))
                 if draw_raw:  
                   imgname_raw = '/scr/twangcat/caffenet_results/test/raw_'+str(count)+'.png' 
                   cv2.imwrite(imgname_raw, np.clip(img_raw,0,255).astype(np.uint8))
